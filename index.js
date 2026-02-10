@@ -15,6 +15,15 @@ const port = process.env.PORT || 5000;
 
 const crypto = require("crypto");
 
+// FB admin
+const admin = require("firebase-admin");
+const serviceAccount = require("./zapshift-firebase-adminsdk.json");
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+// generateTrackingId
 function generateTrackingId() {
   const date = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const random = crypto.randomBytes(4).toString("hex").toUpperCase();
@@ -24,6 +33,15 @@ function generateTrackingId() {
 // MiddleWare
 app.use(cors());
 app.use(express.json());
+
+const verifyFBToken = (req, res, next) => {
+  const token = req.headers.authorization;
+
+  if (!token) {
+    return res.status(401).send({ message: "unauthorized access" });
+  }
+  next();
+};
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@datahive.5frjob8.mongodb.net/?appName=DataHive`;
 
@@ -154,9 +172,23 @@ async function run() {
     // update
     app.patch("/payment-success", async (req, res) => {
       const sessionId = req.query.session_id;
-
       const session = await stripe.checkout.sessions.retrieve(sessionId);
-      console.log("session retripe:", session);
+
+      // console.log("session retripe:", session);
+
+      const transactionId = session.payment_intent;
+      const query = { transactionId: transactionId };
+
+      const paymentExist = await paymentCollection.findOne(query);
+
+      if (paymentExist) {
+        return res.send({
+          message: "already exist",
+          transactionId,
+          trackingId: paymentExist.trackingId,
+        });
+      }
+
       const trackingId = generateTrackingId();
 
       if (session.payment_status === "paid") {
@@ -179,6 +211,7 @@ async function run() {
           transactionId: session.payment_intent,
           paymentStatus: session.payment_status,
           paidAt: new Date(),
+          trackingId: trackingId,
         };
         if (session.payment_status === "paid") {
           const resultPayment = await paymentCollection.insertOne(payment);
@@ -193,10 +226,24 @@ async function run() {
       }
       res.send({ success: false });
     });
+
+    // payment related API's
+
+    app.get("/payments", verifyFBToken, async (req, res) => {
+      const email = req.query.email;
+      const query = {};
+      if (email) {
+        query.customerEmail = email;
+      }
+      const cursor = paymentCollection.find(query);
+      const result = await cursor.toArray();
+      res.send(result);
+    });
+
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
     console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
+      "Pinged your deployment. You successfully connected to MongoDB!",
     );
   } finally {
     // Ensures that the client will close when you finish/error
