@@ -34,13 +34,23 @@ function generateTrackingId() {
 app.use(cors());
 app.use(express.json());
 
-const verifyFBToken = (req, res, next) => {
+const verifyFBToken = async (req, res, next) => {
   const token = req.headers.authorization;
 
   if (!token) {
     return res.status(401).send({ message: "unauthorized access" });
   }
-  next();
+
+  try {
+    const idToken = token.split(" ")[1];
+    const decoded = await admin.auth().verifyIdToken(idToken);
+    // console.log("decoded in the token", decoded);
+    req.decoded_email = decoded.email;
+
+    next();
+  } catch (err) {
+    return res.status(401).send({ message: "Unauthorised access" });
+  }
 };
 
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@datahive.5frjob8.mongodb.net/?appName=DataHive`;
@@ -60,8 +70,20 @@ async function run() {
     await client.connect();
 
     const dataBase = client.db("zap_shift_DB");
+    const userCollection = dataBase.collection("users");
     const parcelsCollection = dataBase.collection("parcels");
     const paymentCollection = dataBase.collection("payments");
+
+    // users Api
+
+    app.post("/users", async (req, res) => {
+      const user = req.body;
+      user.role = "user";
+      user.createdAt = new Date();
+
+      const result = await userCollection.insertOne(user);
+      res.send(result);
+    });
 
     // Parcels API Get
     app.get("/parcels", async (req, res) => {
@@ -234,8 +256,13 @@ async function run() {
       const query = {};
       if (email) {
         query.customerEmail = email;
+
+        // check email address
+        if (email !== req.decoded_email) {
+          return res.status(403).send({ message: "forbidden access" });
+        }
       }
-      const cursor = paymentCollection.find(query);
+      const cursor = paymentCollection.find(query).sort({ paidAt: -1 });
       const result = await cursor.toArray();
       res.send(result);
     });
